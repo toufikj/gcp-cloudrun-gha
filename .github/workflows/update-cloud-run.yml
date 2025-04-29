@@ -1,0 +1,121 @@
+name: Update Cloud Run Service
+
+on:
+  workflow_call:
+    inputs:
+      gcp-project-id:
+        description: 'The GCP project ID'
+        required: true
+        type: string
+      cloud-run-service:
+        description: 'The Cloud Run service name'
+        required: true
+        type: string
+      image-tag:
+        description: 'The Docker image tag'
+        required: true
+        type: string
+      artifact-registry-repo:
+        description: 'The Artifact Registry repository name'
+        required: true
+        type: string
+      region:
+        description: 'The GCP region'
+        required: true
+        type: string
+      env_vars:
+        description: 'Environment variables for the Cloud Run service'
+        required: false
+        type: string  
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v0
+        with:
+          credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+
+      - name: Download ENV File
+        uses: actions/download-artifact@v4
+        with:
+          name: environment-variables
+          path: .
+
+      - name: Download SECRETS File
+        uses: actions/download-artifact@v4
+        with:
+          name: secrets
+          path: .    
+
+      - name: Confirm JSON File Transfer
+        run: |
+          if [ -f "env.json" ]; then
+            echo "✅ JSON file transferred successfully!"
+          else
+            echo "❌ JSON file is missing!"
+            exit 1
+          fi
+
+      - name: Display Env File
+        run: cat env.json
+      - name: Display Secrets File
+        run: cat secrets.json  
+
+      - name: Convert JSON to Multi-Line and Save to RUN_ENV_VARS
+        run: |
+          echo "Formatting env variables for RUN task..."
+          {
+            echo "RUN_ENV_VARS<<EOF"
+            jq -r '.[] | "\(.name)=\(.value)"' env.json
+            echo "EOF"
+          } >> $GITHUB_ENV
+          echo "✅ Environment variables saved to RUN_ENV_VARS"
+  
+      - name: Check and Parse secrets.json if Present
+        run: |
+          if [ -f "secrets.json" ]; then
+            echo "Formatting secrets for RUN task..."
+            {
+              echo "RUN_SECRETS<<EOF"
+              jq -r '.[] | "\(.name)=\(.value):latest"' secrets.json
+              echo "EOF"
+            } >> $GITHUB_ENV
+            echo "✅ Secrets saved to RUN_SECRETS"
+          else
+            echo "No secrets.json found. Skipping..."
+          fi    
+  
+      - name: Debug - Display RUN_ENV_VARS Content
+        run: echo "$RUN_ENV_VARS"
+      - name: Debug - Display RUN_SECRETS Content
+        run: echo "$RUN_SECRETS"
+
+      - name: Cloudrun Deploy
+        id: 'deploy'
+        uses: 'google-github-actions/deploy-cloudrun@v2'
+        with:
+          service: ${{ inputs.cloud-run-service }}
+          image: gcr.io/${{ inputs.gcp-project-id }}/${{ inputs.artifact-registry-repo }}:${{ inputs.image-tag }}
+          region: ${{ inputs.region }} 
+          env_vars_update_strategy: overwrite
+          secrets_update_strategy: overwrite
+          flags: |
+            --allow-unauthenticated 
+          env_vars: |-
+            ${{ env.RUN_ENV_VARS }}
+          secrets: |-
+            ${{ env.RUN_SECRETS }}
+
+      # - name: Deploy to Cloud Run
+      #   run: |
+      #     gcloud run deploy ${{ inputs.cloud-run-service }} \
+      #       --image gcr.io/${{ inputs.gcp-project-id }}/${{ inputs.artifact-registry-repo }}:${{ inputs.image-tag }} \
+      #       --region ${{ inputs.region }} \
+      #       --platform managed \
+      #       --allow-unauthenticated 
