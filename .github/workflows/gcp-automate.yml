@@ -1,0 +1,80 @@
+name: GCP - Prod Automate Build-Push, Update-Cloud-Run
+
+on:
+  workflow_dispatch:
+
+env:
+  BRAND_NAME: "TOUFIK"
+  GCP_PROJECT_ID: "production"
+  ARTIFACT_REGISTRY_REPO: "prod-nextjs"
+  CLOUD_RUN_SERVICE: "prod-nextjs"
+  REGION: "asia-south1"
+  ENVIRONMENT_VARIABLES: '[
+    {"name": "NEXT_PUBLIC_ENVIRONMENT", "value": "production"}]'
+
+  SECRETS: '[]'
+
+permissions:
+  contents: read
+
+jobs:
+  get-env-vars:
+    name: Get Environment Vars
+    runs-on: ubuntu-latest
+    outputs:
+      BRAND_NAME: "${{ env.BRAND_NAME }}"
+      GCP_PROJECT_ID: "${{ env.GCP_PROJECT_ID }}"
+      ARTIFACT_REGISTRY_REPO: "${{ env.ARTIFACT_REGISTRY_REPO }}"
+      CLOUD_RUN_SERVICE: "${{ env.CLOUD_RUN_SERVICE }}"
+      REGION: "${{ env.REGION }}"
+      
+    steps:
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Convert ENVIRONMENT_VARIABLES and SECRETS to JSON
+        run: |
+          echo '${{ env.ENVIRONMENT_VARIABLES }}' | jq '.' > env.json
+          echo '${{ env.SECRETS }}' | jq '.' > secrets.json
+
+      - name: Display JSON File
+        run: |
+          cat env.json
+          echo "Secrets--"
+          cat secrets.json
+  
+      - name: Upload JSON as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: environment-variables
+          path: env.json
+      - name: Upload JSON as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: secrets
+          path: secrets.json    
+
+  # Trigger the build and push workflow
+  build-and-push-to-artifact-registry:
+    needs: get-env-vars
+    uses: .github/workflows/build-and-push.yml
+    with:
+      gcp-project-id: ${{ needs.get-env-vars.outputs.GCP_PROJECT_ID }}
+      artifact-registry-repo: ${{ needs.get-env-vars.outputs.ARTIFACT_REGISTRY_REPO }}
+      image-tag: "${{ github.run_number }}"
+      dockerfile-path: "."  # Specify the Dockerfile path
+      brand_name: "${{ needs.get-env-vars.outputs.BRAND_NAME }}"
+      IMAGE-ENV: "PRODUCTION" 
+    secrets: inherit
+
+  # Trigger the update Cloud Run service workflow
+  update-cloud-run-service:
+    needs: [build-and-push-to-artifact-registry, get-env-vars]
+    uses: .github/workflows/update-cloud-run.yml
+    with:
+      gcp-project-id: ${{ needs.get-env-vars.outputs.GCP_PROJECT_ID }}
+      cloud-run-service: ${{ needs.get-env-vars.outputs.CLOUD_RUN_SERVICE }}
+      image-tag: "${{ github.run_number }}"
+      artifact-registry-repo: ${{ needs.get-env-vars.outputs.ARTIFACT_REGISTRY_REPO }}
+      region: ${{ needs.get-env-vars.outputs.REGION }}
+    secrets: inherit 
